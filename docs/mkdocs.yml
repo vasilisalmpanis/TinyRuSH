@@ -1,0 +1,20 @@
+site_name: TinyRuSH
+Nav:
+  Home: 
+    - index.md
+
+theme:
+  name: material
+  highlightjs: true
+  hljs_languages:
+    - Rust
+    - bash
+  features:
+    - navigation.indexes
+
+markdown_extensions:
+  - pymdownx.tasklist
+  - admonition
+  - codehilite
+  - toc:
+      permalink: true
