@@ -4,29 +4,36 @@ use std::io::Write;
 use std::process::Command;
 use std::env;
 use std::collections::HashMap;
-
-use rustyline::{error, Result};
+use rustyline::error::ReadlineError;
+use rustyline::{Result};
 
 struct Cmd<'a> {
     exec: &'a str,
     args: Vec<&'a str>,
 }
 
-fn parse<'a>(command: Option<&'a str>, args: Vec<&'a str>) -> Option<Cmd<'a>> {
-    match command {
-        Some(cmd) => Some(Cmd {
+impl <'a> FromIterator<&'a str> for Cmd<'a> {
+    fn from_iter<I: IntoIterator<Item=&'a str>>(iter: I) -> Self {
+        let mut iter = iter.into_iter();
+        let cmd = iter.next().unwrap();
+        Cmd {
             exec: cmd,
-            args,
-        }),
-        None => None,
+            args: iter.collect::<Vec<&str>>(),
+        }
     }
 }
 
-fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -> io::Result<()> {
+fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -> Result<()> {
     match cmd.exec {
         "export" => {
-            for (key,value) in env {
-                println!("{}={}", key,value);
+            if cmd.args.len() == 0 {
+                for (key,value) in env {
+                    println!("{}='{}'", key,value);
+                }
+            } else {
+                for &arg in &cmd.args {
+                    _ = arg.find("=");
+                }
             }
             Ok(())
         }
@@ -35,10 +42,24 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
             std::process::exit(0);
         }
         "cd" => {
-            let path = cmd.args.first().unwrap_or(&".");
-            if let Err(e) = std::env::set_current_dir(Path::new(path)) {
+            let home = env.get("HOME")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "/".to_string());
+            let path = match cmd.args.first() {
+                Some(path) => {
+                    path.to_string()
+                },
+                _ => {
+                    home
+                },
+            };
+            let current_dir = std::env::current_dir().unwrap();
+            if let Err(e) = std::env::set_current_dir(Path::new(path.as_str())) {
                 eprintln!("cd: {}", e);
+                return Err(ReadlineError::Interrupted);
             }
+            env.insert("OLD_PWD".to_string(), current_dir.into_os_string().into_string().unwrap());
+            env.insert("PWD".to_string(), path.to_string());
             Ok(())
         }
         "pwd" => {
@@ -68,7 +89,7 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
                 }
                 Err(e) => {
                     eprintln!("{}: command not found ({})", cmd.exec, e);
-                    Ok(())
+                    Err(ReadlineError::Interrupted)
                 }
             }
         }
@@ -86,7 +107,8 @@ fn main() {
     }
 
     loop {
-        print!("TinyRush: ");
+        let current_dir = std::env::current_dir().unwrap();
+        print!("-> {}: ", current_dir.into_os_string().into_string().unwrap());
         io::stdout().flush().unwrap();
 
         let mut input = String::new();
@@ -97,14 +119,11 @@ fn main() {
                     continue;
                 }
 
-                let mut parts = input.split_whitespace();
-                let command = parts.next();
-                let args = parts.collect::<Vec<&str>>();
+                let parts = input.split_whitespace();
+                let cmd = Cmd::from_iter(parts);
 
-                if let Some(cmd) = parse(command, args) {
-                    if let Err(e) = execute_command_with_lifetime(&cmd, & mut env) {
-                        eprintln!("Error executing command: {}", e);
-                    }
+                if let Err(e) = execute_command_with_lifetime(&cmd, & mut env) {
+                    eprintln!("Error executing command: {}", e);
                 }
             }
             Err(e) => {
