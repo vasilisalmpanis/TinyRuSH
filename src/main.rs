@@ -12,13 +12,81 @@ struct Cmd<'a> {
     args: Vec<&'a str>,
 }
 
+fn expand_variables(input: &str, vars: &HashMap<String, String>) -> String {
+    let mut result = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single_quotes = false;
+    
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                in_single_quotes = !in_single_quotes;
+                result.push(ch);
+            }
+            '$' if !in_single_quotes => {
+                if let Some(&next_ch) = chars.peek() {
+                    if next_ch == '{' {
+                        chars.next();
+                        let var_name = extract_var_name_braced(&mut chars);
+                        if let Some(value) = vars.get(&var_name) {
+                            result.push_str(value);
+                        }
+                    } else if next_ch.is_alphabetic() || next_ch == '_' {
+                        let var_name = extract_var_name_simple(&mut chars);
+                        if let Some(value) = vars.get(&var_name) {
+                            result.push_str(value);
+                        }
+                    } else {
+                        result.push(ch);
+                    }
+                } else {
+                    result.push(ch);
+                }
+            }
+            _ => {
+                result.push(ch);
+            }
+        }
+    }
+    
+    result
+}
+
+fn extract_var_name_braced(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut var_name = String::new();
+    while let Some(&ch) = chars.peek() {
+        if ch == '}' {
+            chars.next();
+            break;
+        } else if ch.is_alphanumeric() || ch == '_' {
+            var_name.push(chars.next().unwrap());
+        } else {
+            break;
+        }
+    }
+    var_name
+}
+
+fn extract_var_name_simple(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut var_name = String::new();
+    while let Some(&ch) = chars.peek() {
+        if ch.is_alphanumeric() || ch == '_' {
+            var_name.push(chars.next().unwrap());
+        } else {
+            break;
+        }
+    }
+    var_name
+}
+
 impl <'a> FromIterator<&'a str> for Cmd<'a> {
     fn from_iter<I: IntoIterator<Item=&'a str>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         let cmd = iter.next().unwrap();
+        let args = iter.collect::<Vec<&str>>();
         Cmd {
             exec: cmd,
-            args: iter.collect::<Vec<&str>>(),
+            args: args,
         }
     }
 }
@@ -31,8 +99,18 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
                     println!("{}='{}'", key,value);
                 }
             } else {
-                for &arg in &cmd.args {
-                    _ = arg.find("=");
+                for arg in &cmd.args {
+                    let var = arg.to_owned();
+                    let mut split = var.split('=');
+                    let key = split.next();
+                    let value = split.next().unwrap_or_else(|| "");
+                    _ = match key {
+                        Some(k) => {
+                            env.insert(k.into(), value.to_string());
+                        }
+                        _ => {}   
+                    };
+
                 }
             }
             Ok(())
@@ -60,6 +138,12 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
             }
             env.insert("OLD_PWD".to_string(), current_dir.into_os_string().into_string().unwrap());
             env.insert("PWD".to_string(), path.to_string());
+            Ok(())
+        }
+        "unset" => {
+            for arg in &cmd.args {
+                env.remove(arg.to_owned());
+            }
             Ok(())
         }
         "pwd" => {
@@ -114,11 +198,12 @@ fn main() {
         let mut input = String::new();
         match io::stdin().read_line(&mut input) {
             Ok(_) => {
-                let input = input.trim();
+                let mut input = input.trim();
                 if input.is_empty() {
                     continue;
                 }
-
+                let expanded = expand_variables(&input[..], &env);
+                input = &expanded;
                 let parts = input.split_whitespace();
                 let cmd = Cmd::from_iter(parts);
 
