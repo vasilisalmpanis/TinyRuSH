@@ -12,6 +12,14 @@ struct Cmd<'a> {
     args: Vec<&'a str>,
 }
 
+static mut ERROR_CODE: u32 = 0;
+
+fn set_error(code: u32) {
+    unsafe {
+        ERROR_CODE = code;
+    }
+}
+
 fn expand_variables(input: &str, vars: &HashMap<String, String>) -> String {
     let mut result = String::new();
     let mut chars = input.chars().peekable();
@@ -37,7 +45,15 @@ fn expand_variables(input: &str, vars: &HashMap<String, String>) -> String {
                             result.push_str(value);
                         }
                     } else {
-                        result.push(ch);
+                        if next_ch == '?' {
+                            unsafe {
+                                let code = char::from_digit(ERROR_CODE,10);
+                                result.push(code.unwrap());
+                            }
+                            chars.next();
+                        } else {
+                            result.push(ch);
+                        }
                     }
                 } else {
                     result.push(ch);
@@ -113,6 +129,7 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
 
                 }
             }
+            set_error(0);
             Ok(())
         }
         "exit" => {
@@ -134,6 +151,7 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
             let current_dir = std::env::current_dir().unwrap();
             if let Err(e) = std::env::set_current_dir(Path::new(path.as_str())) {
                 eprintln!("cd: {}", e);
+                set_error(1);
                 return Err(ReadlineError::Interrupted);
             }
             env.insert("OLD_PWD".to_string(), current_dir.into_os_string().into_string().unwrap());
@@ -173,6 +191,7 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
                 }
                 Err(e) => {
                     eprintln!("{}: command not found ({})", cmd.exec, e);
+                    set_error(e.raw_os_error().unwrap() as u32);
                     Err(ReadlineError::Interrupted)
                 }
             }
@@ -207,9 +226,7 @@ fn main() {
                 let parts = input.split_whitespace();
                 let cmd = Cmd::from_iter(parts);
 
-                if let Err(e) = execute_command_with_lifetime(&cmd, & mut env) {
-                    eprintln!("Error executing command: {}", e);
-                }
+                _ = execute_command_with_lifetime(&cmd, & mut env);
             }
             Err(e) => {
                 eprintln!("Error reading input: {}", e);
