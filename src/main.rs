@@ -1,11 +1,9 @@
 use std::path::Path;
-use std::io::{self};
-use std::io::Write;
 use std::process::Command;
 use std::env;
 use std::collections::HashMap;
 use rustyline::error::ReadlineError;
-use rustyline::{Result};
+use rustyline::{DefaultEditor, Result};
 
 struct Cmd<'a> {
     exec: &'a str,
@@ -107,7 +105,7 @@ impl <'a> FromIterator<&'a str> for Cmd<'a> {
     }
 }
 
-fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -> Result<()> {
+fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -> Result<i32> {
     match cmd.exec {
         "export" => {
             if cmd.args.len() == 0 {
@@ -130,11 +128,11 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
                 }
             }
             set_error(0);
-            Ok(())
+            Ok(0)
         }
         "exit" => {
             println!("Goodbye!");
-            std::process::exit(0);
+            Ok(-1)
         }
         "cd" => {
             let home = env.get("HOME")
@@ -156,24 +154,24 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
             }
             env.insert("OLD_PWD".to_string(), current_dir.into_os_string().into_string().unwrap());
             env.insert("PWD".to_string(), path.to_string());
-            Ok(())
+            Ok(0)
         }
         "unset" => {
             for arg in &cmd.args {
                 env.remove(arg.to_owned());
             }
-            Ok(())
+            Ok(0)
         }
         "pwd" => {
             match std::env::current_dir() {
                 Ok(path) => println!("{}", path.display()),
                 Err(e) => eprintln!("pwd: {}", e),
             }
-            Ok(())
+            Ok(0)
         }
         "echo" => {
             println!("{}", cmd.args.join(" "));
-            Ok(())
+            Ok(0)
         }
         _ => {
             let mut command = Command::new(cmd.exec);
@@ -182,10 +180,10 @@ fn execute_command_with_lifetime(cmd: &Cmd, env: &mut HashMap<String, String>) -
             match command.spawn() {
                 Ok(mut child) => {
                     match child.wait() {
-                        Ok(_) => Ok(()),
+                        Ok(_) => Ok(0),
                         Err(e) => {
                             eprintln!("Error waiting for process: {}", e);
-                            Ok(())
+                            Ok(1)
                         }
                     }
                 }
@@ -209,14 +207,22 @@ fn main() {
         );
     }
 
+    let mut rl = match DefaultEditor::new() {
+        Ok(l) => l,   // Return the editor instance
+        Err(_) => return,
+    };
+    let history_file = format!("{}/.tinyrush_history",
+    env.get("HOME").unwrap_or(&".".to_string()));
+    if rl.load_history(&history_file).is_err() {
+        println!("No previous history.");
+    }
     loop {
         let current_dir = std::env::current_dir().unwrap();
-        print!("-> {}: ", current_dir.into_os_string().into_string().unwrap());
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(_) => {
+        let flag = format!("-> {}: ", current_dir.display());
+        let readline = rl.readline(&flag[..]);
+        match readline {
+            Ok(input) => {
+                _ = rl.add_history_entry(input.as_str());
                 let mut input = input.trim();
                 if input.is_empty() {
                     continue;
@@ -226,7 +232,15 @@ fn main() {
                 let parts = input.split_whitespace();
                 let cmd = Cmd::from_iter(parts);
 
-                _ = execute_command_with_lifetime(&cmd, & mut env);
+                _ = match execute_command_with_lifetime(&cmd, & mut env) {
+                    Ok(num) => {
+                        match num {
+                           -1 => break,
+                           _ => continue,
+                        }
+                    },
+                    _ => {},
+                };
             }
             Err(e) => {
                 eprintln!("Error reading input: {}", e);
@@ -234,4 +248,5 @@ fn main() {
             }
         }
     }
+    _ = rl.save_history(&history_file);
 }
